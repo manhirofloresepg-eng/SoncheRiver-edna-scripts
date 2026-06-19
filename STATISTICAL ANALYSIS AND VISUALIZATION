@@ -1,0 +1,351 @@
+# ==============================================================================
+STATISTICAL ANALYSIS AND VISUALIZATION
+# eDNA METABARCODING - SONCHE CANYON
+# ==============================================================================
+# Objective: Diversity indices, PCA, rarefaction curves, heatmap, and figures
+# Author: Manhiro Flores-Iwasaki
+# Date: June 2026
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. INSTALL AND LOAD REQUIRED PACKAGES
+# ------------------------------------------------------------------------------
+
+# install.packages(c("tidyverse", "vegan", "iNEXT", "ggplot2", 
+#                    "pheatmap", "ggrepel", "patchwork", "openxlsx", "ggVennDiagram"))
+
+library(tidyverse)
+library(vegan)
+library(iNEXT)
+library(ggplot2)
+library(pheatmap)
+library(ggrepel)
+library(patchwork)
+library(openxlsx)
+library(ggVennDiagram)
+
+# ------------------------------------------------------------------------------
+# 2. SET WORKING DIRECTORY AND LOAD DATA
+# ------------------------------------------------------------------------------
+
+setwd("~/proyectos/sonche_edna/")
+
+dir.create("output/figures", showWarnings = FALSE)
+dir.create("output/tables", showWarnings = FALSE)
+
+# ------------------------------------------------------------------------------
+# 3. LOAD TAXONOMIC DATA (FROM SCRIPT 1)
+# ------------------------------------------------------------------------------
+
+# Load the taxonomic assignment from Script 1
+# taxonomy <- read.xlsx("output/tables/taxonomy_for_analysis.xlsx")
+
+# For this example, we create the data directly based on your results
+taxa <- c("Chaetostoma milesi", "Astroblepus sp.", "Oncorhynchus mykiss",
+          "Brycon sp.", "Astyanax sp.", "Hemibrycon sp.", "Hoplias sp.",
+          "Brachyhypopomus brevirostris", "Hypostomus nigrolineatus",
+          "Megalancistrus parananus", "Aphanotorulus emarginatus",
+          "Pterygoplichthys disjunctivus")
+
+# Read abundance matrix (from DECONA pipeline)
+read_matrix <- matrix(c(
+  1014, 574,  # C. milesi
+  856,  312,  # Astroblepus sp.
+  737,  337,  # O. mykiss
+  456,    0,  # Brycon sp.
+  234,    0,  # Astyanax sp.
+  189,    0,  # Hemibrycon sp.
+  143,    0,  # Hoplias sp.
+  0,    189,  # B. brevirostris
+  0,    156,  # H. nigrolineatus
+  78,   67,   # M. parananus
+  45,   34,   # A. emarginatus
+  23,   45    # P. disjunctivus
+), nrow = 12, byrow = TRUE)
+
+rownames(read_matrix) <- taxa
+colnames(read_matrix) <- c("Metafish", "Mifish")
+
+# Convert to data frame
+reads_df <- as.data.frame(read_matrix) %>%
+  rownames_to_column("Taxon") %>%
+  mutate(Total_Reads = Metafish + Mifish) %>%
+  arrange(desc(Total_Reads))
+
+write.xlsx(reads_df, "output/tables/abundance_taxa.xlsx")
+cat("✓ Abundance data loaded\n")
+
+# ------------------------------------------------------------------------------
+# 4. PRESENCE/ABSENCE MATRIX
+# ------------------------------------------------------------------------------
+
+presence <- reads_df %>%
+  mutate(across(c(Metafish, Mifish), ~ ifelse(. > 0, 1, 0))) %>%
+  mutate(Detected_Both = ifelse(Metafish == 1 & Mifish == 1, 1, 0))
+
+# Summary statistics
+n_total <- nrow(presence)
+n_metafish <- sum(presence$Metafish)
+n_mifish <- sum(presence$Mifish)
+n_both <- sum(presence$Detected_Both)
+n_excl_metafish <- sum(presence$Metafish == 1 & presence$Mifish == 0)
+n_excl_mifish <- sum(presence$Metafish == 0 & presence$Mifish == 1)
+
+cat("\n========== DETECTION SUMMARY ==========\n")
+cat("Total taxa detected:", n_total, "\n")
+cat("Detected by Metafish:", n_metafish, "\n")
+cat("Detected by MiFish-U:", n_mifish, "\n")
+cat("Detected by both primers:", n_both, "\n")
+cat("Exclusive to Metafish:", n_excl_metafish, "\n")
+cat("Exclusive to MiFish-U:", n_excl_mifish, "\n")
+
+# ------------------------------------------------------------------------------
+# 5. COMPLEMENTARITY INDICES
+# ------------------------------------------------------------------------------
+
+a <- n_both
+b <- n_excl_metafish
+c <- n_excl_mifish
+
+jaccard <- a / (a + b + c)
+complementarity <- (b + c) / (a + b + c)
+
+cat("\n========== COMPLEMENTARITY INDICES ==========\n")
+cat("Jaccard Similarity:", round(jaccard, 3), "\n")
+cat("Complementarity Index:", round(complementarity, 3), "\n")
+
+indices_df <- data.frame(
+  Index = c("Jaccard Similarity", "Complementarity Index"),
+  Value = c(round(jaccard, 3), round(complementarity, 3))
+)
+write.xlsx(indices_df, "output/tables/complementarity_indices.xlsx")
+
+# ------------------------------------------------------------------------------
+# 6. VENN DIAGRAM (Figure 3B)
+# ------------------------------------------------------------------------------
+
+metafish_taxa <- presence$Taxon[presence$Metafish == 1]
+mifish_taxa <- presence$Taxon[presence$Mifish == 1]
+
+venn_list <- list(Metafish = metafish_taxa, Mifish = mifish_taxa)
+
+p_venn <- ggVennDiagram(venn_list, label = "count", label_alpha = 0.5) +
+  scale_fill_gradient(low = "white", high = "steelblue", guide = FALSE) +
+  labs(title = "Taxa Overlap Between Primers") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+ggsave("output/figures/fig3b_venn.png", p_venn, width = 6, height = 5, dpi = 300)
+cat("✓ Venn diagram saved\n")
+
+# ------------------------------------------------------------------------------
+# 7. RAREFACTION CURVES (Figure 3A) - iNEXT
+# ------------------------------------------------------------------------------
+
+# Prepare data for iNEXT
+inext_data <- list(
+  Metafish = rowSums(read_matrix[, "Metafish", drop = FALSE]),
+  Mifish = rowSums(read_matrix[, "Mifish", drop = FALSE])
+)
+inext_data <- lapply(inext_data, function(x) x[x > 0])
+
+# Run iNEXT
+inext_result <- iNEXT(inext_data, q = 0, datatype = "abundance", 
+                      endpoint = 5000, nboot = 100)
+
+# Save results
+saveRDS(inext_result, "output/tables/inext_result.rds")
+
+# Rarefaction plot
+p_rarefaction <- ggiNEXT(inext_result, type = 1) +
+  theme_bw() +
+  scale_color_manual(values = c("orange", "blue"), 
+                     labels = c("Metafish", "MiFish-U")) +
+  scale_fill_manual(values = c("orange", "blue"),
+                    labels = c("Metafish", "MiFish-U")) +
+  labs(title = "Rarefaction and Extrapolation Curves",
+       x = "Number of Reads",
+       y = "Taxonomic Richness") +
+  theme(legend.position = "bottom",
+        legend.title = element_blank())
+
+ggsave("output/figures/fig3_rarefaction.png", p_rarefaction, 
+       width = 8, height = 6, dpi = 300)
+cat("✓ Rarefaction curves saved\n")
+
+# ------------------------------------------------------------------------------
+# 8. HEATMAP (Figure 4)
+# ------------------------------------------------------------------------------
+
+# Filter and transform data
+heatmap_matrix <- read_matrix[rowSums(read_matrix) > 0, ]
+heatmap_log <- log10(heatmap_matrix + 1)
+
+# Order by total abundance
+order_rows <- order(rowSums(heatmap_matrix), decreasing = TRUE)
+heatmap_log <- heatmap_log[order_rows, ]
+
+# Generate heatmap
+p_heatmap <- pheatmap(
+  heatmap_log,
+  main = "eDNA Signal Intensity (log10 + 1)",
+  color = colorRampPalette(c("white", "lightblue", "darkblue"))(100),
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  display_numbers = FALSE,
+  fontsize_row = 9,
+  fontsize_col = 12,
+  angle_col = 0,
+  cellwidth = 60,
+  cellheight = 20,
+  filename = "output/figures/fig4_heatmap.png",
+  width = 6,
+  height = 8
+)
+cat("✓ Heatmap saved\n")
+
+# ------------------------------------------------------------------------------
+# 9. PCA - ENVIRONMENTAL VARIABLES (Figure 5)
+# ------------------------------------------------------------------------------
+
+# Water quality data
+water_quality <- data.frame(
+  Site = c("Rondon", "Pishcopata", "Tingorbamba", "Colpa", "R. Molinopampa", 
+           "Molinopampa", "Cheto", "Cuyamal", "R. Olea"),
+  Temp = c(15.6, 15.9, 16.4, 15.9, 11.4, 16.4, 15.6, 15.9, 16.8),
+  pH = c(6.8, 8.44, 8.01, 7.57, 7.66, 8.01, 6.8, 8.44, 8.54),
+  DO = c(8.9, 6.1, 7.1, 7.3, 7.2, 7.1, 8.9, 6.1, 7.1),
+  Ammonium = c(0.56, 0.83, 1.24, 0.54, 0.22, 0.11, 0.36, 0.83, 0.16),
+  Nitrate = c(0.5, 0.6, 6.1, 0.7, 0.6, 0.2, 0.5, 0.6, 0.36)
+)
+
+# Run PCA
+pca_result <- prcomp(water_quality[, 2:6], scale = TRUE)
+
+# Extract variance explained
+pc1_var <- round(summary(pca_result)$importance[2, 1] * 100, 1)
+pc2_var <- round(summary(pca_result)$importance[2, 2] * 100, 1)
+
+# Extract scores and loadings
+scores <- as.data.frame(pca_result$x) %>%
+  rownames_to_column("Site") %>%
+  mutate(Site = water_quality$Site)
+
+loadings <- as.data.frame(pca_result$rotation[, 1:2]) %>%
+  rownames_to_column("Variable")
+
+# Save PCA results
+write.xlsx(scores, "output/tables/pca_scores.xlsx")
+write.xlsx(loadings, "output/tables/pca_loadings.xlsx")
+
+# PCA plot
+p_pca <- ggplot() +
+  # Points
+  geom_point(data = scores, aes(x = PC1, y = PC2), 
+             size = 4, color = "blue", alpha = 0.7) +
+  # Site labels
+  geom_text_repel(data = scores, aes(x = PC1, y = PC2, label = Site),
+                  size = 3.5, max.overlaps = 15) +
+  # Variable vectors
+  geom_segment(data = loadings, 
+               aes(x = 0, y = 0, xend = PC1 * 4, yend = PC2 * 4),
+               arrow = arrow(length = unit(0.3, "cm")), 
+               color = "red", size = 1) +
+  # Variable labels
+  geom_text_repel(data = loadings, 
+                  aes(x = PC1 * 4.5, y = PC2 * 4.5, label = Variable),
+                  color = "red", size = 4, fontface = "bold") +
+  theme_bw() +
+  labs(title = "PCA: Water Quality Variables",
+       x = paste0("PC1 (", pc1_var, "%)"),
+       y = paste0("PC2 (", pc2_var, "%)")) +
+  coord_fixed()
+
+ggsave("output/figures/fig5_pca.png", p_pca, width = 8, height = 6, dpi = 300)
+cat("✓ PCA plot saved\n")
+
+# ------------------------------------------------------------------------------
+# 10. ALPHA DIVERSITY
+# ------------------------------------------------------------------------------
+
+# For this example, we simulate per-site abundance data
+# In reality, this comes from DECONA with sample-level read counts
+
+sites <- c("Rondon", "Pishcopata", "Tingorbamba", "Colpa", "R. Molinopampa",
+           "Molinopampa", "Cheto", "Cuyamal", "R. Olea")
+
+# Simulated abundance by site (using top 6 taxa)
+top_taxa <- c("C. milesi", "Astroblepus sp.", "O. mykiss", 
+              "Brycon sp.", "Astyanax sp.", "Hoplias sp.")
+
+site_abundance <- matrix(c(
+  120, 85, 40, 30, 15, 5,   # Site 1
+  95, 70, 35, 25, 10, 0,    # Site 2
+  150, 120, 60, 50, 30, 15, # Site 3 (Tingorbamba - hotspot)
+  80, 60, 30, 20, 10, 0,    # Site 4
+  40, 30, 250, 0, 0, 0,     # Site 5 (Molinopampa - cold)
+  90, 70, 40, 20, 15, 5,    # Site 6
+  110, 85, 45, 30, 20, 5,   # Site 7
+  85, 65, 35, 20, 15, 0,    # Site 8
+  70, 50, 25, 15, 10, 0     # Site 9
+), nrow = 9, byrow = TRUE)
+
+colnames(site_abundance) <- top_taxa
+rownames(site_abundance) <- sites
+
+# Calculate diversity indices
+alpha_diversity <- data.frame(
+  Site = sites,
+  Richness = specnumber(site_abundance),
+  Shannon = diversity(site_abundance, index = "shannon"),
+  Simpson = diversity(site_abundance, index = "simpson"),
+  Evenness = diversity(site_abundance, index = "shannon") / 
+    log(specnumber(site_abundance))
+)
+
+cat("\n========== ALPHA DIVERSITY ==========\n")
+print(alpha_diversity)
+
+write.xlsx(alpha_diversity, "output/tables/alpha_diversity.xlsx")
+
+# ------------------------------------------------------------------------------
+# 11. RELATIVE ABUNDANCE PLOT (Figure 2)
+# ------------------------------------------------------------------------------
+
+# Convert to long format
+abundance_long <- as.data.frame(site_abundance) %>%
+  rownames_to_column("Site") %>%
+  pivot_longer(cols = -Site, names_to = "Taxon", values_to = "Reads") %>%
+  mutate(Reads = ifelse(Reads == 0, NA, Reads))
+
+# Stacked bar plot
+p_abundance <- ggplot(abundance_long, aes(x = Site, y = Reads, fill = Taxon)) +
+  geom_bar(stat = "identity", position = "fill") +
+  scale_fill_brewer(palette = "Set3") +
+  labs(title = "Relative eDNA Abundance by Site",
+       x = "Sampling Site",
+       y = "Proportion of Reads") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave("output/figures/fig2_abundance.png", p_abundance, 
+       width = 10, height = 6, dpi = 300)
+cat("✓ Relative abundance plot saved\n")
+
+# ------------------------------------------------------------------------------
+# 12. SAVE SESSION INFO
+# ------------------------------------------------------------------------------
+
+sink("output/session_info.txt")
+sessionInfo()
+sink()
+
+# Save all objects
+save.image("output/complete_session.RData")
+
+cat("\n========== SCRIPT 2 COMPLETED ==========\n")
+cat("All output saved to 'output/'\n")
+cat("  - Figures: output/figures/\n")
+cat("  - Tables: output/tables/\n")
+cat("  - Session info: output/session_info.txt\n")
+cat("  - Complete workspace: output/complete_session.RData\n")
+cat("========================================\n")
