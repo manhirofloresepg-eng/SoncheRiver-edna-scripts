@@ -160,7 +160,7 @@ taxonomy_assigned <- blast_results %>%
   mutate(
     Assignment_Level = case_when(
       pident >= 97 ~ "Species",
-      pident >= 90 & pident < 97 ~ "Genus",
+      pident >= 90 & pident <= 95 ~ "Genus",
       TRUE ~ "Unassigned"
     ),
     # If Species, use full name; if Genus, use only genus
